@@ -6,7 +6,7 @@
 #include <pthread.h>
 #include <stdbool.h>
 
-#define P 1  // number of posts
+#define P 2  // number of posts
 #define L 1  // capacity of lazaret
 #define MAX_TIME 2  // sleep duration [seconds]
 #define REQUEST 0  // msg type flags
@@ -47,7 +47,8 @@ pthread_mutex_t crit_mutex;
 List* createList();
 void addNode(List*, int, int, int);
 bool checkIfInsert(Node*, Node*);
-void removeNode(List*);
+void removeNodeLazaret(List*, int);
+void removeNodeLocation(List*);
 void printList(List*);
 bool checkLazaret(List*, int);
 
@@ -63,8 +64,10 @@ void *helperThread(void *vargp) {
     MPI_Recv(msg, MSG_SIZE, MPI_INT, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
 
     if(status.MPI_TAG == REQUEST) {  // request received
-      if(msg[1] == location)  // check if requested teleporter is in use
+      if(msg[1] == location) { // check if requested teleporter is in use
         pthread_mutex_lock(&crit_mutex);
+	pthread_mutex_unlock(&crit_mutex); 
+	}
 
       //printf("Rank %d, otrzymałem żądanie od %d\n", rank, status.MPI_SOURCE);
 
@@ -80,7 +83,7 @@ void *helperThread(void *vargp) {
       //printf("Rank %d, wysłałem potwierdzenie do %d\n", rank, status.MPI_SOURCE);
 
       pthread_mutex_unlock(&shared_mutex);
-      pthread_mutex_unlock(&crit_mutex);  // tutaj ??
+      //pthread_mutex_unlock(&crit_mutex);  // tutaj ??
     }
     else if(status.MPI_TAG == CONFIRM) {  // confirmation received
       //printf("Rank %d, otrzymałem potwierdzenie od %d\n", rank, status.MPI_SOURCE);
@@ -93,9 +96,9 @@ void *helperThread(void *vargp) {
       //printf("Rank %d, otrzymałem wiadomość RELEASE od %d\n", rank, status.MPI_SOURCE);
       pthread_mutex_lock(&shared_mutex);
 
-      removeNode(queues[msg[1]]);
+      removeNodeLocation(queues[msg[1]]);
       if(msg[2] == -1)
-        removeNode(queues[P]);
+        removeNodeLazaret(queues[P], status.MPI_SOURCE);
 
       pthread_mutex_unlock(&shared_mutex);
     }
@@ -124,7 +127,7 @@ int main(int argc, char **argv) {
 
   pthread_create(&thread_id, NULL, helperThread, NULL);
 
-  //while(1) {
+  while(1) {
     // local section at post
     printf("Rank %d, sekcja lokalna na posterunku %d\n", rank, location);
     sleep(drawTime());
@@ -134,6 +137,7 @@ int main(int argc, char **argv) {
     pthread_mutex_lock(&shared_mutex);
     clock_val = clock_val + 1;
     request_clock_val = clock_val;
+    action = 1;
 
     addNode(queues[location], rank, clock_val, action);
     addNode(queues[P], rank, clock_val, action);
@@ -147,7 +151,7 @@ int main(int argc, char **argv) {
         //printf("Rank %d, wysłałem żądanie do %d o teleporter %d\n", rank, i, location);
       }
     }
-
+printList(queues[P]);
     // conditions to enter critical section; active waiting
     while(confirmation_counter != size || queues[location]->head->rank != rank || !checkLazaret(queues[P], rank)) {}
 
@@ -160,7 +164,7 @@ int main(int argc, char **argv) {
     sleep(drawTime());
     pthread_mutex_lock(&shared_mutex);
 
-    removeNode(queues[location]);
+    removeNodeLocation(queues[location]);
 
     msg[1] = location; msg[2] = 1;
     for(i = 0; i < size; i++) {
@@ -201,19 +205,20 @@ int main(int argc, char **argv) {
 
     // conditions to enter critical section
     while(confirmation_counter != size || queues[new_location]->head->rank != rank) {}
-
+ pthread_mutex_lock(&crit_mutex);
     // critical section in Lazaret
     printf("Rank %d, sekcja krytyczna w Lazarecie\n", rank);
+	
     pthread_mutex_lock(&shared_mutex);
     location = new_location; // ATTENTION: changed before critical section -> blocking mechanism in helper thread checking wheather requested teleporter's in use
-    removeNode(queues[P]);
+    removeNodeLazaret(queues[P], rank);
     pthread_mutex_unlock(&shared_mutex);
     //printf("Jedi %d teleportuje się z Lazaretu do posterunku %d", rank, location);
 
-    pthread_mutex_lock(&crit_mutex);
+   
     sleep(drawTime());
     pthread_mutex_lock(&shared_mutex);
-    removeNode(queues[location]);
+    removeNodeLocation(queues[location]);
     msg[1] = location; msg[2] = -1;
     for(i = 0; i < size; i++) {
       if(i != rank) {
@@ -223,7 +228,7 @@ int main(int argc, char **argv) {
     }
     pthread_mutex_unlock(&shared_mutex);
     pthread_mutex_unlock(&crit_mutex);
-  //}
+  }
 
   printf("KONIEC\n");
   sleep(30);
@@ -297,7 +302,26 @@ bool checkIfInsert(Node *added, Node *tmp) {
   return decision;
 }
 
-void removeNode(List *list) {
+void removeNodeLazaret(List *list, int rank){
+    Node *tmp = list->head;
+
+    if(tmp->rank == rank){
+	list->head = list->head->next;
+	free(tmp);
+	
+}else{
+    while(tmp->next != NULL){
+	if(tmp->next->rank == rank){
+		Node *delete = tmp->next;
+		tmp->next = delete->next;
+		free(delete);
+		break;
+	}
+    }
+}
+}
+
+void removeNodeLocation(List *list) {
   Node *tmp = list->head;
   list->head = list->head->next;
   free(tmp);

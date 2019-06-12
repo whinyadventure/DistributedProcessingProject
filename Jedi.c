@@ -72,16 +72,15 @@ void *helperThread(void *vargp) {
       //printf("Rank %d, otrzymałem żądanie od %d\n", rank, status.MPI_SOURCE);
 
       pthread_mutex_lock(&shared_mutex);
-
       clock_val = max(msg[0], clock_val) + 1;  // clock synchronization
+
       addNode(queues[msg[1]], status.MPI_SOURCE, msg[0], msg[2]);  // add to teleporter request queue
       if(msg[2] == 1)
         addNode(queues[P], status.MPI_SOURCE, msg[0], msg[2]);  // if wants to enter Lazaret then add to Lazaret request queue
 
-      msg[0] = clock_val; msg[1] = rank;
+      msg[0] = clock_val;
       MPI_Send(msg, MSG_SIZE, MPI_INT, status.MPI_SOURCE, CONFIRM, MPI_COMM_WORLD);
       //printf("Rank %d, wysłałem potwierdzenie do %d\n", rank, status.MPI_SOURCE);
-
       pthread_mutex_unlock(&shared_mutex);
     }
     else if(status.MPI_TAG == CONFIRM) {  // confirmation received
@@ -91,14 +90,12 @@ void *helperThread(void *vargp) {
       else
         printf("Error! Wartość zegara z potwierdzenia mniejsza od tej z żądania!");
     }
-    else if(status.MPI_TAG == RELEASE) {
+    else if(status.MPI_TAG == RELEASE) { // release msg received; free shared resources
       //printf("Rank %d, otrzymałem wiadomość RELEASE od %d\n", rank, status.MPI_SOURCE);
       pthread_mutex_lock(&shared_mutex);
-
       removeNodeLocation(queues[msg[1]], status.MPI_SOURCE, msg[0], msg[2]);
       if(msg[2] == -1)
         removeNodeLazaret(queues[P], status.MPI_SOURCE);
-
       pthread_mutex_unlock(&shared_mutex);
     }
   }
@@ -153,28 +150,6 @@ int main(int argc, char **argv) {
     // conditions to enter critical section; active waiting
     while(confirmation_counter != size || queues[location]->head->rank != rank || !checkLazaret(queues[P], rank)) {}
 
-
-    /*while(confirmation_counter != size) {
-      sleep(2);
-      printf("rank: %d, potwierdzenia do lazaretu: %d\n", rank, confirmation_counter);
-    }
-    printf("rank: %d, warunki do lazaretu: potwierdzenia ok\n", rank);
-
-    while(queues[location]->head->rank != rank) {
-      sleep(2);
-      printf("rank: %d, lista do transportera - glowa do lazaretu: %d\n", rank, queues[location]->head->rank);
-      printList(queues[location]);
-    }
-    printf("rank: %d, warunki do lazaretu: teleporter ok\n", rank);
-
-    while(!checkLazaret(queues[P], rank)) {
-      sleep(2);
-      printf("rank: %d, do lazaretu checkLazaret: false\n", rank);
-      printList(queues[P]);
-    }
-    printf("rank: %d, do lazaretu checkLazaret: true\n", rank);
-    printf("rank: %d, warunki do lazaretu: lazaret ok\n", rank);*/
-
     // critical section at post
     printf("Rank %d, sekcja krytyczna na posterunku\n", rank);
     //printf("Jedi %d teleportuje się do Lazaretu z posterunku %d", rank, location);
@@ -185,14 +160,14 @@ int main(int argc, char **argv) {
     removeNodeLocation(queues[location], rank, request_clock_val, 1);
 
     msg[0] = request_clock_val; msg[1] = location; msg[2] = 1;
+    location = P;
+    pthread_mutex_unlock(&shared_mutex);
     for(i = 0; i < size; i++) {
   		if(i != rank) {
   			MPI_Send(msg, MSG_SIZE, MPI_INT, i, RELEASE, MPI_COMM_WORLD);
         //printf("Rank %d, wysłałem wiadomość RELEASE transportera %d do procesu %d\n", rank, location, i);
       }
     }
-    location = P;
-    pthread_mutex_unlock(&shared_mutex);
     pthread_mutex_unlock(&crit_mutex);
 
     // local section in Lazaret
@@ -201,7 +176,6 @@ int main(int argc, char **argv) {
     sleep(drawTime());
 
     confirmation_counter = 1;
-
     new_location = drawLocation();
 
     pthread_mutex_lock(&shared_mutex);
@@ -209,11 +183,9 @@ int main(int argc, char **argv) {
     request_clock_val = clock_val;
 
     addNode(queues[new_location], rank, clock_val, -1);
-
-    msg[0] = clock_val; msg[1] = new_location; msg[2] = -1;
-
     pthread_mutex_unlock(&shared_mutex);
 
+    msg[0] = clock_val; msg[1] = new_location; msg[2] = -1;
     for(i = 0; i < size; i++) {
       if(i != rank) {
         MPI_Send(msg, MSG_SIZE, MPI_INT, i, REQUEST, MPI_COMM_WORLD);
@@ -221,39 +193,21 @@ int main(int argc, char **argv) {
       }
     }
 
-    //printList(queues[new_location]);
-
     // conditions to enter critical section
     while(confirmation_counter != size || queues[new_location]->head->rank != rank) {}
 
-    /*while(confirmation_counter != size) {
-      sleep(2);
-      printf("rank: %d, potwierdzenia do posterunku: %d\n", rank, confirmation_counter);
-    }
-    printf("rank: %d, warunki do posterunku: potwierdzenia ok\n", rank);
-
-    while(queues[new_location]->head->rank != rank) {
-      sleep(2);
-      printf("rank: %d, lista do transportera - glowa: %d do posterunku\n", rank, queues[new_location]->head->rank);
-      printList(queues[new_location]);
-    }
-    printf("rank: %d, warunki do posterunku: transporter ok\n", rank);
-    */
-
-    pthread_mutex_lock(&crit_mutex);
     // critical section in Lazaret
     printf("Rank %d, sekcja krytyczna w Lazarecie\n", rank);
 
+    pthread_mutex_lock(&crit_mutex);
     pthread_mutex_lock(&shared_mutex);
-    location = new_location; // ATTENTION: changed before critical section -> blocking mechanism in helper thread checking wheather requested teleporter's in use
+    location = new_location; // ATTENTION: location changed before critical section -> blocking mechanism in helper thread checking wheather requested teleporter's in use
+
     removeNodeLazaret(queues[P], rank);
-    //pthread_mutex_unlock(&shared_mutex);
-    //printf("Jedi %d teleportuje się z Lazaretu do posterunku %d", rank, location);
-
-
     sleep(drawTime());
-    //pthread_mutex_lock(&shared_mutex);
     removeNodeLocation(queues[location], rank, request_clock_val, -1);
+    pthread_mutex_unlock(&shared_mutex);
+
     msg[0] = request_clock_val; msg[1] = location; msg[2] = -1;
     for(i = 0; i < size; i++) {
       if(i != rank) {
@@ -261,24 +215,10 @@ int main(int argc, char **argv) {
         //printf("Rank %d, wysłałem wiadomość RELEASE transportera %d do procesu %d\n", rank, location, i);
       }
     }
-    pthread_mutex_unlock(&shared_mutex);
     pthread_mutex_unlock(&crit_mutex);
   }
 
-  addNode(queues[0], 1, 3, 1);
-  addNode(queues[0], 3, 5, -1);
-  addNode(queues[0], 2, 2, -1);
-  addNode(queues[0], 5, 1, 1);
-  addNode(queues[0], 4, 8, 1);
-
-  printList(queues[0]);
-
-  removeNodeLocation(queues[0], 4, 8, 1);
-
-  printList(queues[0]);
-
   printf("KONIEC\n");
-  sleep(30);
   pthread_cancel(thread_id);
   pthread_mutex_destroy(&shared_mutex);
   pthread_mutex_destroy(&crit_mutex);
@@ -386,12 +326,6 @@ void removeNodeLocation(List *list, int rank, int req_clock, int act) {
       free(delete);
     }
 }
-
-/*void removeNodeLocation(List *list) {
-  Node *tmp = list->head;
-  list->head = list->head->next;
-  free(tmp);
-}*/
 
 void printList(List *list) {
   if(!list->head)
